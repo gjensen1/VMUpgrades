@@ -93,7 +93,7 @@ Function Get-VCenter {
 #*************
 Function Get-HostName {
     #Prompt User for ESXi Host
-    Write-Host "Enter the FQHN of the ESXi Host you want to collect data from: " -ForegroundColor "Yellow" -NoNewLine
+    Write-Host "Enter the FQHN of the ESXi Host that was upgraded: " -ForegroundColor "Yellow" -NoNewLine
     $Global:HostName = Read-Host
 }
 #*************************
@@ -105,7 +105,6 @@ Function Get-HostName {
 #**********
 Function ConnectVC {
     #Connect to VC using collected info
-    "----------------------------------"
     "Connecting to $Global:VCName"
     Connect-VIServer $Global:VCName -Credential $Global:Creds > $null
 }
@@ -113,41 +112,16 @@ Function ConnectVC {
 # EndFunction ConnectVC
 #**********************
 
-#*****************
-# StartVMs
-#*****************
-Function StartVMs {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-
-    forEach ($s in $servers) {
-        "Starting VM $s"
-        Start-VM -RunAsync -VM $s
-    }
-    $servers = $null
+#********
+# StartVM
+#********
+Function StartVM($s) {
+    "Starting VM $s"
+    Start-VM -RunAsync -VM $s | Out-Null
 }
-#*********************
-# EndFunction StartVMs
-#*********************
-
-#*****************
-# WaitVMToolsStart
-#*****************
-Function WaitVMToolsStart {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-
-    forEach ($s in $servers) {
-        "Waiting for VM Tools to Start on $s"
-        Do {
-            $toolsStatus = (Get-VM $s).extensiondata.Guest.ToolsStatus
-            Write-host $toolsStatus
-            sleep 10
-        } until ($toolsStatus -ne 'toolsNotRunning')
-    }
-    $servers = $null
-}
-#*****************************
-# EndFunction WaitVMToolsStart
-#*****************************
+#********************
+# EndFunction StartVM
+#********************
 
 #******************
 # Check-ToolsStatus
@@ -177,14 +151,9 @@ Function Check-ToolsStatus($vm){
 #***************
 # UpgradeVMTools
 #***************
-Function UpgradeVMTools {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-
-    forEach ($s in $servers) {
-        "Updating VMTools on $s"
-        Update-Tools $s
-    }
-    $servers = $null
+Function UpgradeVMTools($s) {
+    "Updating VMTools on $s"
+    Update-Tools $s
 }
 #***************************
 # EndFunction UpgradeVMTools
@@ -193,23 +162,18 @@ Function UpgradeVMTools {
 #**************************
 # Deploy-VMNicChangePackage
 #**************************
-Function Deploy-VMNicChangePackage{
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-    
-    forEach ($s in $servers) {
-        "Connecting to C$ on $s"
-        New-PSDrive REMOTE -PSProvider FileSystem -Root \\$s\c$ -Credential $Global:CredsLocal > $null
-        "Check for Temp directory on $s"
-        If (!(Test-Path REMOTE:\temp)) {
-            New-Item REMOTE:\temp -type Directory > $Null
-            "Folder Structure built"
+Function Deploy-VMNicChangePackage($s){
+    "Connecting to C$ on $s"
+    New-PSDrive REMOTE -PSProvider FileSystem -Root \\$s\c$ -Credential $Global:CredsLocal > $null
+    "Check for Temp directory on $s"
+    If (!(Test-Path REMOTE:\temp)) {
+        New-Item REMOTE:\temp -type Directory > $Null
+        "Folder Structure built"
         }
-        "Copying VMSwitchAdapter package to $s"
-        copy-item -path $Global:Folder\VMNicChangeAdapter\*.* REMOTE:\temp\ -force
-
-        "Disconnect $s" 
-        Remove-PSDrive REMOTE
-    }    
+    "Copying VMSwitchAdapter package to $s"
+    copy-item -path $Global:Folder\VMNicChangeAdapter\*.* REMOTE:\temp\ -force
+    "Disconnect $s" 
+    Remove-PSDrive REMOTE
 }
 #**************************************
 # EndFunction Deploy-VMNicChangePackage
@@ -218,15 +182,11 @@ Function Deploy-VMNicChangePackage{
 #***************************
 # Execute-VMNicChangePackage
 #***************************
-Function Execute-VMNicChangePackage{
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-
-    forEach ($s in $servers) {
-        "Starting VMNicChangeAdapter.ps1 on $s"
-        invoke-wmimethod -computer $s -path Win32_process -name Create -ArgumentList "cmd /c c:\temp\CheckExecutionPolicy.bat"
-        Sleep 3
-        invoke-wmimethod -computer $s -path Win32_process -name Create -ArgumentList "Powershell c:\temp\VMNicChangeAdapter.ps1" -Credential $Global:CredsLocal    
-    }
+Function Execute-VMNicChangePackage($s){
+    "Starting VMNicChangeAdapter.ps1 on $s"
+    invoke-wmimethod -computer $s -path Win32_process -name Create -ArgumentList "cmd /c c:\temp\CheckExecutionPolicy.bat"
+    Sleep 3
+    invoke-wmimethod -computer $s -path Win32_process -name Create -ArgumentList "Powershell c:\temp\VMNicChangeAdapter.ps1" -Credential $Global:CredsLocal    
 }
 #**************************************
 # EndFunction ExecuteVMNicChangePackage
@@ -235,53 +195,52 @@ Function Execute-VMNicChangePackage{
 #************
 # Add-VMXNet3
 #************
-Function Add-VMXNet3 {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-    
-    forEach ($s in $servers) {
-        "Getting NetworkName for $s"
-        $NetworkInfo = Get-NetworkAdapter -vm $s
-        $NetworkName = $NetworkInfo.NetworkName
-        "Adding New VMXNet3 Adapter to $s"
-        New-NetworkAdapter -VM $s -NetworkName $NetworkName -Type VMXNet3 -StartConnected -Confirm:$false
-    }
-    $servers = $null  
+Function Add-VMXNet3($s) {
+    "Getting NetworkName for $s"
+    $NetworkInfo = Get-NetworkAdapter -vm $s
+    $NetworkName = $NetworkInfo.NetworkName
+    "Adding New VMXNet3 Adapter to $s"
+    New-NetworkAdapter -VM $s -NetworkName $NetworkName -Type VMXNet3 -StartConnected -Confirm:$false
 }
 #************************
 # EndFunction Add-VMXNet3
 #************************
 
-#************
-# ShutdownVMs
-#************
-Function ShutdownVMs {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-
-    forEach ($s in $servers) {
-        "Shutdown VM $s"
-        Shutdown-VMGuest -VM $s -Confirm:$false
-    }
-    $servers = $null    
+#***********
+# ShutdownVM
+#***********
+Function ShutdownVM($s) {
+    "Shutdown VM $s"
+    Shutdown-VMGuest -VM $s -Confirm:$false
 }
-#************************
-# EndFunction ShutdownVMs
-#************************
+#***********************
+# EndFunction ShutdownVM
+#***********************
+
+#**************
+# WaitVMStartup
+#**************
+Function WaitVMStartup($s){
+    "Waiting to confirm startup of $s"
+    Do {
+        $VMToolsStatus = Check-ToolsStatus $server
+        Write-host -NoNewLine "."
+        sleep 5
+    } until ($VMtoolsStatus -ne "NotRunning")
+    "VMware Tools Status $VMtoolsStatus"
+}
 
 #***************
 # WaitVMShutdown
 #***************
-Function WaitVMShutdown {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-
-    forEach ($s in $servers) {
-        "Waiting to confirm shutdown of $s"
-        Do {
-           $PowerStatus = (Get-VM $s).PowerState
-            Write-host $PowerStatus
-            sleep 3
+Function WaitVMShutdown($s) {
+    "Waiting to confirm shutdown of $s"
+    Do {
+        $PowerStatus = (Get-VM $s).PowerState
+        Write-host -NoNewLine "."
+        sleep 3
         } until ($PowerStatus -eq 'Poweredoff')
-    }
-    $servers = $null
+        "Powered Off"
 }
 #***************************
 # EndFunction WaitVMShutdown
@@ -290,15 +249,9 @@ Function WaitVMShutdown {
 #*************
 # Remove-E1000
 #*************
-Function Remove-E1000 {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-
-    forEach ($s in $servers){
-        "Removing the E1000 adapter on $s"
-        Get-VM "$s" | Get-NetworkAdapter | Where {$_.Type -eq "E1000"} | Remove-NetworkAdapter -Confirm:$false
-    }
-    $servers = $null
-
+Function Remove-E1000($s) {
+    "Removing the E1000 adapter on $s"
+    Get-VM "$s" | Get-NetworkAdapter | Where {$_.Type -eq "E1000"} | Remove-NetworkAdapter -Confirm:$false
 }
 #*************************
 # EndFunction Remove-E1000
@@ -307,14 +260,9 @@ Function Remove-E1000 {
 #**************
 # Take-Snapshot
 #**************
-Function Take-Snapshot {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-
-    forEach ($s in $servers){
-        "Taking Snapshot of $s"
-        Get-VM $s | New-Snapshot -Name "Hardware" -Description "Snapshot before Virtual Hardware Upgrade"
-    }
-    $servers = $null
+Function Take-Snapshot($s) {
+    "Taking Snapshot of $s"
+    Get-VM $s | New-Snapshot -Name "Hardware" -Description "Snapshot before Virtual Hardware Upgrade"
 }
 #**************************
 # EndFunction Take-Snapshot
@@ -323,14 +271,9 @@ Function Take-Snapshot {
 #****************
 # Delete-Snapshot
 #****************
-Function Delete-Snapshot {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-
-    forEach ($s in $servers){
-        "Deleting Hardware Snapshot of $s"
-        Get-Snapshot -Name "Hardware" -vm $s | Remove-Snapshot -confirm:$false
-    }
-    $servers = $null
+Function Delete-Snapshot($s) {
+    "Deleting Hardware Snapshot of $s"
+    Get-Snapshot -Name "Hardware" -vm $s | Remove-Snapshot -confirm:$false
 }
 #****************************
 # EndFunction Delete-Snapshot
@@ -339,8 +282,7 @@ Function Delete-Snapshot {
 #*******************
 # Upgrade-VMHardware
 #*******************
-Function Upgrade-VMHardware {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
+Function Upgrade-VMHardware($s) {
     $v11 = "vmx-11"
     $v10 = "vmx-10"
     
@@ -358,16 +300,13 @@ Function Upgrade-VMHardware {
             }
     
     #Perform Hardware Upgrade
-    forEach ($s in $servers){
-        $vmview = Get-VM $s | Get-View
-        $vmVersion = $vmView.Config.Version
-
+    $vmview = Get-VM $s | Get-View
+    $vmVersion = $vmView.Config.Version
  
-        if ($vmVersion -ne $upgradeTo){
-            "Harware level on $s requires upgrading... "
-            "Upgrading Now."
-            Get-View ($vmView.UpgradeVM_Task($upgradeTo)) | Out-Null
-            }
+    if ($vmVersion -ne $upgradeTo){
+        "Harware level on $s requires upgrading... "
+        "Upgrading Now."
+        Get-View ($vmView.UpgradeVM_Task($upgradeTo)) | Out-Null
         }
 }
 #*******************************
@@ -377,32 +316,49 @@ Function Upgrade-VMHardware {
 #*************************
 # Verify-VMHardwareUpgrade
 #*************************
-Function Verify-VMHardwareUpgrade {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
+Function Verify-VMHardwareUpgrade($s) {
     $Global:VerifyHardware = $false
-    forEach ($s in $servers){
-        "Waiting for VM Tools to Start on $s"
+
+    "Waiting for VM Tools to Start on $s"
+    $VMToolsStatus = Check-ToolsStatus $s
+    Do {
         $VMToolsStatus = Check-ToolsStatus $s
-        Do {
-            $VMToolsStatus = Check-ToolsStatus $s
-            Write-host $VMToolsStatus
-            sleep 10
-        } until ($VMtoolsStatus -ne "NotRunning")
-        if ($VMToolsStatus -eq "OK"){
-            "VM has Started Successfully"
-            $Global:VerifyHardware = $true
+        Write-host -NoNewline "."
+        sleep 5
+    } until ($VMtoolsStatus -ne "NotRunning")
+    "VMware Tool status $VMtoolsStatus"
+    if ($VMToolsStatus -eq "OK"){
+        "VM has Started Successfully"
+        $Global:VerifyHardware = $true
         }
-            else{
-                "There seems to be an Issue verifying the status of VMwareTools on $s.  Please Manually check the status of the VM and remove the Snapshot if requred."  
-                Read-Host "Press <Enter> to Continue"
+        else{
+            "There seems to be an Issue verifying the status of VMwareTools on $s.  Please Manually check the status of the VM and remove the Snapshot if requred."  
+            Read-Host "Press <Enter> to Continue"
             }
-    }
-        $servers = $null
 }
 #*************************************
 # EndFunction Verify-VMHardwareUpgrade
 #*************************************
 
+#****************
+# Open-RDPSession
+#****************
+Function Open-RDPSession($s) {
+    "Starting RDP Session for $s"
+
+    $username = $Global:CredsLocal.Username
+    #unencrypting $credsLocal.Password so that we can send it to PSExec
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Global:CredsLocal.Password)
+    $pass = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+
+    cmdkey /generic:"$s" /user:"$username" /Pass:"$pass" | Out-Null
+    mstsc /v:$s /w:1024 /h:768
+    #Clear unencrypted password from memory
+    $pass = $null              
+}
+#****************************
+# EndFunction Open-RDPSession
+#****************************
 
 #*************
 # DisconnectVC
@@ -410,7 +366,6 @@ Function Verify-VMHardwareUpgrade {
 Function DisconnectVC {
     #Disconnect from VC
     "Disconnecting $Global:VCName"
-    "-----------------------------------------"
     Disconnect-VIServer -Server $Global:VCName -Confirm:$false
 }
 #*************************
@@ -430,6 +385,9 @@ Function Clean-Up {
     $Global:CredsLocal = $null
     $Global:VerifyHardware = $null
 }
+#*********************
+# EndFunction Clean-Up
+#*********************
 
 #***************
 # Execute Script
@@ -441,36 +399,99 @@ $ErrorActionPreference="Continue"
 Start-Transcript -path $Global:Folder\VMUpgradesLog.txt
 "================================================="
 " "
-$Global:Creds = Get-Credential
+Write-Host "Get credentials for vCenter Logon" -ForegroundColor Yellow
+$Global:Creds = Get-Credential -Credential $null
 Get-VCenter
 Get-HostName
 $Global:WorkFolder = "$Global:Folder\$Global:HostName"
 ConnectVC
+"-------------------------------------------------"
+# Get Server List from HostInformation
+$servers = Get-Content "$Global:WorkFolder\server.txt"
 
-StartVMs
-WaitVMToolsStart
-UpgradeVMTools
-WaitVMToolsStart
-Add-VMXNet3
-
-#Deploy VMNICSwitch Package
-"Get Local Credentials for VM"
-$Global:CredsLocal = Get-Credential
-Deploy-VMNicChangePackage
-#Execute-VMNicChangePackage
-#Sleep 10
-"The NicChange Package has been deployed to the servers.  Please Manually the script on each one now!"  
-Read-Host "Press <Enter> to Continue when complete."
-
-ShutdownVMs
-WaitVMShutdown
-Remove-E1000
-Take-Snapshot
-Upgrade-VMHardware
-StartVMs
-Verify-VMHardwareUpgrade
-if ($Global:VerifyHardware){
-    Delete-Snapshot
+#Start VMs
+forEach ($server in $servers) {
+    StartVM $server
 }
+"-------------------------------------------------"
+#Wait for Start
+forEach ($server in $servers) {
+    WaitVMStartup $Server
+}
+"-------------------------------------------------"
+#Upgrade VM Tools
+forEach ($server in $servers) {
+    UpgradeVMTools $server
+}
+"-------------------------------------------------"
+#Verify, wait for VMs to start
+forEach ($server in $servers) {
+    WaitVMStartup $Server
+}
+"-------------------------------------------------"
+#Add new VMXNet3 to each VM
+forEach ($server in $servers) {
+    Add-VMXNet3 $server
+}
+"-------------------------------------------------"
+#Deploy VMNICChange Package
+Write-Host "Get Local Credentials for VMs" -ForegroundColor Yellow
+$Global:CredsLocal = Get-Credential -Credential $null
+forEach ($server in $servers) {
+    Deploy-VMNicChangePackage $server
+}
+Write-Host "==========================================================" -ForegroundColor Yellow
+Write-Host "* The NicChange Package has been deployed to the servers *" -ForegroundColor Yellow
+Write-Host "* Opening RDP Sessions to each one                       *" -ForegroundColor Yellow
+Write-Host "*--------------------------------------------------------*" -ForegroundColor Yellow 
+Write-Host "*   Please Manually run the script on each one now!      *" -ForegroundColor Yellow
+Write-Host "==========================================================" -ForegroundColor Yellow
+forEach ($server in $servers) {
+    Open-RDPSession $server
+}
+#Wait for aknowledgement that script has been run on each VM
+Read-Host "Press <Enter> to Continue when complete." 
+"-------------------------------------------------"
+#Shutdown VMs
+forEach ($server in $servers) {
+    ShutdownVM $server
+}
+"-------------------------------------------------"
+#Verify, wait for VMs to shutdown
+forEach ($server in $servers) {
+    WaitVMShutdown $server
+}
+"-------------------------------------------------"
+#Remove E1000 Networt adapter
+forEach ($server in $servers) {
+    Remove-E1000 $server
+}
+"-------------------------------------------------"
+#Take snapshot before Virtual Hardware Upgrade
+forEach ($server in $servers) {
+    Take-Snapshot $server
+}
+"-------------------------------------------------"
+#Upgrade Virtual Hardware
+forEach ($server in $servers) {
+    Upgrade-VMHardware $server
+}
+"-------------------------------------------------"
+#Start VMs
+forEach ($server in $servers) {
+    StartVM $server
+}
+"-------------------------------------------------"
+#Verify Virtual Hardware upgrade successful
+forEach ($server in $servers) {
+    Verify-VMHardwareUpgrade $server
+    if ($Global:VerifyHardware){
+        Delete-Snapshot $server
+    }
+}
+"-------------------------------------------------"
 DisconnectVC
+"-------------------------------------------------"
+Write-Host "               VM Upgrades Complete" -ForegroundColor Green
+"================================================="
 Stop-Transcript
