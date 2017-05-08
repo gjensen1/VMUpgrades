@@ -13,7 +13,7 @@ if ( !(Get-Module -Name VMware.VimAutomation.Core -ErrorAction SilentlyContinue)
     . (join-path -path (Get-ItemProperty  $Regkey).InstallPath -childpath 'Scripts\Initialize-PowerCLIEnvironment.ps1')
 }
 $ErrorActionPreference="Continue"
- 
+
 # -----------------------
 # Define Global Variables
 # -----------------------
@@ -25,6 +25,10 @@ $Global:RunDate = Get-Date
 $Global:RunAgain = $null
 $Global:Creds = $null
 $Global:CredsLocal = $null
+$Global:VerifyHardware = $null
+$Global:TaskTab = @{}
+
+
 
 #*****************
 # Get VC from User
@@ -43,7 +47,7 @@ Function Get-VCenter {
 #*************
 Function Get-HostName {
     #Prompt User for ESXi Host
-    Write-Host "Enter the FQHN of the ESXi Host you want to collect data from: " -ForegroundColor "Yellow" -NoNewLine
+    Write-Host "Enter the FQHN of the ESXi Host that was upgraded: " -ForegroundColor "Yellow" -NoNewLine
     $Global:HostName = Read-Host
 }
 #*************************
@@ -55,120 +59,139 @@ Function Get-HostName {
 #**********
 Function ConnectVC {
     #Connect to VC using collected info
-    "----------------------------------"
     "Connecting to $Global:VCName"
     Connect-VIServer $Global:VCName -Credential $Global:Creds > $null
 }
 #**********************
 # EndFunction ConnectVC
 #**********************
+
+#********
+# StartVM
+#********
+Function StartVM($s) {
+    "Starting VM $s"
+    Start-VM -RunAsync -VM $s | Out-Null
+}
+#********************
+# EndFunction StartVM
+#********************
+
+#**************
+# WaitVMStartup
+#**************
+Function WaitVMStartup($s){
+    "Waiting to confirm startup of $s"
+    Do {
+        $VMToolsStatus = Check-ToolsStatus $server
+        Write-host -NoNewLine "."
+        sleep 5
+    } until ($VMtoolsStatus -ne "NotRunning")
+    "VMware Tools Status $VMtoolsStatus"
+}
+
+#***************
+# UpgradeVMTools
+#***************
+Function UpgradeVMTools($s) {
+
+    
+    $Global:tasktab[(Update-Tools $s -RunAsync).Id] = $s
+    "VMware Tools upgrade started on $s"
+    #Update-Tools $s
+}
+#***************************
+# EndFunction UpgradeVMTools
+#***************************
+
+#******************
+# Check-ToolsStatus
+#******************
+Function Check-ToolsStatus($vm){
+   $vmview = get-VM $vm | Get-View
+   $status = $vmview.Guest.ToolsStatus
  
-#*************
-# DisconnectVC
-#*************
-Function DisconnectVC {
-    #Disconnect from VC
-    "Disconnecting $Global:VCName"
-    "-----------------------------------------"
-    Disconnect-VIServer -Server $Global:VCName -Confirm:$false
+   if ($status -match "toolsOld"){
+      $vmTools = "Old"}
+   elseif($status -match "toolsNotRunning"){
+      $vmTools = "NotRunning"}
+   elseif($status -match "toolsNotInstalled"){
+      $vmTools = "NotInstalled"}
+   elseif($status -match "toolsOK"){
+      $vmTools = "OK"}
+   else{
+      $vmTools = "ERROR"
+	  Read-Host "The ToolsStatus of $vm is $vmTools. Press <CTRL>+C to quit the script or press <ENTER> to continue"
+	  }
+   return $vmTools
 }
-#*************************
-# EndFunction DisconnectVC
-#*************************
+#******************************
+# EndFunction Check-ToolsStatus
+#******************************
 
-#**************************
-# Deploy-VMNicChangePackage
-#**************************
-Function Deploy-VMNicChangePackage{
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-    
-    forEach ($s in $servers) {
-        "Connecting to C$ on $s"
-        New-PSDrive REMOTE -PSProvider FileSystem -Root \\$s\c$ -Credential $Global:CredsLocal > $null
-        "Check for Temp directory on $s"
-        If (!(Test-Path REMOTE:\temp)) {
-            New-Item REMOTE:\temp -type Directory > $Null
-            "Folder Structure built"
+#************************
+# Monitor VMTools Upgrade
+#************************
+Function Monitor-VMToolsUpgrade {
+    $RunningTasks = $Global:TaskTab.Count
+    "VMware-Tools Upgrades are running"
+    While($RunningTasks -gt 0){
+        Get-Task | % {
+            if($Global:TaskTab.ContainsKey($_.Id) -and $_.State -eq "Success"){
+                #"$Global:TaskTab.Item($_.Id) has completed with status of Success"
+                $Global:TaskTab.Remove($_.Id)
+                $RunningTasks-- 
+            }
+        elseif($Global:TaskTab.ContainsKey($_.Id) -and $_.State -eq "Error"){
+                #"$Global:TaskTab.Item($_.Id) has completed with status of Error"
+                $Global:TaskTab.Remove($_.Id)
+                $RunningTasks-- 
+            }
         }
-        "Copying VMSwitchAdapter package to $s"
-        copy-item -path $Global:Folder\VMNicChangeAdapter\*.* REMOTE:\temp\ -force
-
-        "Disconnect $s" 
-        Remove-PSDrive REMOTE
-    }    
-}
-#**************************************
-# EndFunction Deploy-VMNicChangePackage
-#**************************************
-
-#***************************
-# Execute-VMNicChangePackage
-#***************************
-Function Execute-VMNicChangePackage{
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-
-    forEach ($s in $servers) {
-        "Starting VMNicChangeAdapter.ps1 on $s"
-        invoke-wmimethod -computer $s -path Win32_process -name Create -ArgumentList "Powershell c:\temp\VMNicChangeAdapter.ps1" -Credential $Global:CredsLocal    
+        Write-host -NoNewLine "."
+        Start-Sleep -Seconds 5
     }
+    ""
+    "VMware-Tools Upgrades are complete"
 }
-#**************************************
-# EndFunction ExecuteVMNicChangePackage
-#**************************************
-
-#************
-# Add-VMXNet3
-#************
-Function Add-VMXNet3 {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-    
-    forEach ($s in $servers) {
-        "Getting NetworkName for $s"
-        $NetworkInfo = Get-NetworkAdapter -vm $s
-        $NetworkName = $NetworkInfo.NetworkName
-        "Adding New VMXNet3 Adapter to $s"
-        New-NetworkAdapter -VM $s -NetworkName $NetworkName -Type VMXNet3 -StartConnected -Confirm:$false
-    }
-    $servers = $null  
-}
-#************************
-# EndFunction Add-VMXNet3
-#************************
-
-#********************************
-# Check-PowerShellExecutionPolicy
-#********************************
-Function Check-PowerShellExecutionPolicy {
-    $servers = Get-Content "$Global:WorkFolder\server.txt"
-    
-    forEach ($s in $servers) {
-        
-    }    
-
-
-}
-#********************************************
-# EndFunction Check-PowerShellExecutionPolicy
-#********************************************
-
 
 #***************
 # Execute Script
 #***************
 CLS
-
-$Global:Creds = Get-Credential
-#Get-VCenter
-$Global:VCName = "142.145.180.35"
-#Get-HostName
-$Global:HostName = "142.145.180.68"
+$ErrorActionPreference="SilentlyContinue"
+Stop-Transcript | out-null
+$ErrorActionPreference="Continue"
+Start-Transcript -path $Global:Folder\VMUpgradesLog.txt
+"================================================="
+" "
+Write-Host "Get credentials for vCenter Logon" -ForegroundColor Yellow
+$Global:Creds = Get-Credential -Credential $null
+Get-VCenter
+Get-HostName
 $Global:WorkFolder = "$Global:Folder\$Global:HostName"
 ConnectVC
-Add-VMXNet3
-Sleep 10
-#DisconnectVC
-#Deploy VMNICSwitch Package
-"Get Local Credentials for VM"
-$Global:CredsLocal = Get-Credential
-Deploy-VMNicChangePackage
-Execute-VMNicChangePackage
+"-------------------------------------------------"
+# Get Server List from HostInformation
+$servers = Get-Content "$Global:WorkFolder\server.txt"
+
+#Start VMs
+forEach ($server in $servers) {
+    StartVM $server
+}
+"-------------------------------------------------"
+#Wait for Start
+forEach ($server in $servers) {
+    WaitVMStartup $Server
+}
+"-------------------------------------------------"
+#Upgrade VM Tools
+forEach ($server in $servers) {
+    UpgradeVMTools $server
+}
+"-------------------------------------------------"
+#Monitor Tools Upgrade Tasks
+Monitor-VMToolsUpgrade
+""
+
+"-------------------------------------------------"

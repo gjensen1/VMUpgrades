@@ -8,18 +8,15 @@ Purpose of Script:
     Automate the Upgrade of VMs after Host Upgrades
     - Power on VMs
     - Upgrade VMTools
-    - Add VMnet3 adapters to VMs
-    - Deploy VMNicChange script and utilities to the VMs
-    - Open RDP Sessions to each VM
-    - Pause execution of this script and wait for user confirmation to continue
-    - Shutdown VMs
-    - Remove E1000 adapters from VMs
-    - Snapshot each VM
-    - Upgrade virtual Hardware on each VM
+    - Uninstall Intel Network Adapter
+    - Remove Intel adapters in vsphere
+    - add VMnet3 adapters disconnected in vsphere
+    - reconfigure Nic setting IP, enable netbios over tcp
+    - shutdown
+    - snapshot
+    - Upgrade virtual Hardware
+    - Reconnect nic
     - Power on VM
-    - Verify Hardware upgrade
-    - Remove Snapshot from each VM
-
 
     Prompted inputs:  
 
@@ -78,6 +75,7 @@ $Global:RunAgain = $null
 $Global:Creds = $null
 $Global:CredsLocal = $null
 $Global:VerifyHardware = $null
+$Global:TaskTab = @{}
 
 #*****************
 # Get VC from User
@@ -155,12 +153,42 @@ Function Check-ToolsStatus($vm){
 # UpgradeVMTools
 #***************
 Function UpgradeVMTools($s) {
-    "Updating VMTools on $s"
-    Update-Tools $s
+    $Global:tasktab[(Update-Tools $s -RunAsync).Id] = $s
+    "VMware Tools upgrade started on $s"
+    #Update-Tools $s
 }
 #***************************
 # EndFunction UpgradeVMTools
 #***************************
+
+#***********************
+# Monitor-VMToolsUpgrade
+#***********************
+Function Monitor-VMToolsUpgrade {
+    $RunningTasks = $Global:TaskTab.Count
+    "VMware-Tools Upgrades are running"
+    While($RunningTasks -gt 0){
+        Get-Task | % {
+            if($Global:TaskTab.ContainsKey($_.Id) -and $_.State -eq "Success"){
+                #"$Global:TaskTab.Item($_.Id) has completed with status of Success"
+                $Global:TaskTab.Remove($_.Id)
+                $RunningTasks-- 
+            }
+        elseif($Global:TaskTab.ContainsKey($_.Id) -and $_.State -eq "Error"){
+                #"$Global:TaskTab.Item($_.Id) has completed with status of Error"
+                $Global:TaskTab.Remove($_.Id)
+                $RunningTasks-- 
+            }
+        }
+        Write-host -NoNewLine "."
+        Start-Sleep -Seconds 7
+    }
+    ""
+    "VMware-Tools Upgrades are complete"
+}
+#***********************************
+# EndFunction Monitor-VMToolsUpgrade
+#***********************************
 
 #**************************
 # Deploy-VMNicChangePackage
@@ -232,6 +260,9 @@ Function WaitVMStartup($s){
     } until ($VMtoolsStatus -ne "NotRunning")
     "VMware Tools Status $VMtoolsStatus"
 }
+#**************************
+# EndFunction WaitVMStartup
+#**************************
 
 #***************
 # WaitVMShutdown
@@ -399,7 +430,8 @@ CLS
 $ErrorActionPreference="SilentlyContinue"
 Stop-Transcript | out-null
 $ErrorActionPreference="Continue"
-Start-Transcript -path $Global:Folder\VMUpgradesLog.txt
+$ExDate = Get-Date
+Start-Transcript -path $Global:Folder\VMUpgradesLog-$ExDate.txt
 "================================================="
 " "
 Write-Host "Get credentials for vCenter Logon" -ForegroundColor Yellow
@@ -427,12 +459,15 @@ forEach ($server in $servers) {
     UpgradeVMTools $server
 }
 "-------------------------------------------------"
+#Monitor Tools Upgrade Tasks
+Monitor-VMToolsUpgrade
+""
+"-------------------------------------------------"
 #Verify, wait for VMs to start
 forEach ($server in $servers) {
     WaitVMStartup $Server
 }
 "-------------------------------------------------"
-
 #Add new VMXNet3 to each VM
 forEach ($server in $servers) {
     Add-VMXNet3 $server
